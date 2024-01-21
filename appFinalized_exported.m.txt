@@ -1,0 +1,285 @@
+classdef appFinalized_exported < matlab.apps.AppBase
+
+    % Properties that correspond to app components
+    properties (Access = public)
+        UIFigure                  matlab.ui.Figure
+        filterorderDropDown       matlab.ui.control.DropDown
+        filterorderDropDownLabel  matlab.ui.control.Label
+        StopButton                matlab.ui.control.Button
+        StartButton               matlab.ui.control.Button
+        UIAxes4                   matlab.ui.control.UIAxes
+        UIAxes3                   matlab.ui.control.UIAxes
+        UIAxes2                   matlab.ui.control.UIAxes
+        UIAxes                    matlab.ui.control.UIAxes
+    end
+
+    
+    properties (Access = private)
+        onePanelWidth = 576;
+    end
+
+   
+    properties (Access = private)
+         AcquiringData logical = false; % Flag to control data acquisition
+        a % Arduino connection object
+        t % Time vector for plotting
+        f % Frequency vector for spectrum
+        Fs double = 1000; % Sampling frequency in Hz
+        LowCutoff double = 20; % Example low cutoff frequency in Hz
+        HighCutoff double = 200; % Example high cutoff frequency in Hz
+        FilterOrder double = 2; % Default filter order
+    end
+
+    methods (Access = private)
+        
+        % Initialize Arduino
+        function initializeArduinoConnection(app)
+            if isempty(app.a)
+                try
+                    app.a = arduino('COM5', 'Uno', 'Libraries', 'SPI');
+                    disp('Arduino connected.');
+                catch e
+                    disp('Failed to connect Arduino:');
+                    disp(e.message);
+                end
+            end
+        end
+
+        % Start Func
+        function startupFcn(app)
+            % Initialize Arduino 
+            initializeArduinoConnection(app);
+    
+            % Initialize Time and Frequency Vectors
+            app.t = linspace(0, 1, 1000); % Time vector, 
+            app.f = linspace(0, 500, 500); % Frequency vector for spectrum,
+        end
+
+        % Update Plots
+        function updatePlots(app, rawData)
+           % Plot the raw signal using stairs
+            stairs(app.UIAxes, app.t, rawData);
+            title(app.UIAxes, 'Raw Signal in Time Domain');
+            ylim(app.UIAxes, 'auto');
+
+    % Calculate and plot the spectrum of the raw signal
+    Y = fft(rawData);
+    P2 = abs(Y/length(rawData));
+    P1 = P2(1:length(rawData)/2+1);
+    P1(2:end-1) = 2*P1(2:end-1);
+    plot(app.UIAxes3, app.f, P1);
+    title(app.UIAxes3, 'Spectrum of Raw Signal (fft)');
+
+   
+            
+        end
+        
+    end
+    
+    
+
+    % Callbacks that handle component events
+    methods (Access = private)
+
+        % Button pushed function: StartButton
+        function StartButtonPushed(app, event)
+                      
+             disp('Start button pressed.');
+    app.AcquiringData = true;
+
+    % Prepare the Arduino connection and pin, 
+    if isempty(app.a)
+        app.a = arduino('COM5', 'Uno', 'Libraries', 'SPI');
+    end
+    signalPin = 'A0';
+
+    % Initialize a buffer for the voltage data
+    bufferSize = 1000; % Example size for the buffer
+    voltageBuffer = zeros(1, bufferSize);
+    filteredBuffer = zeros(1, bufferSize); % Buffer for filtered signal
+    offsetBuffer = zeros(1, 100); % Buffer to store the last 100 readings for running average
+    % Initialize a buffer for the voltage data
+    
+    % Initialize variables for plotting
+    app.t = linspace(0, 1, bufferSize); % Time vector
+    app.f = linspace(0, 500, bufferSize/2); % Frequency vector for spectrum
+
+
+            % Example in updatePlots or StartButtonPushed
+        function calculateBPM(app, spectrum, frequencyVector)
+            % Find the peak in the spectrum
+            [peakValue, peakIndex] = max(spectrum);
+            peakFrequency = frequencyVector(peakIndex);
+        
+            % Convert frequency to BPM (assuming each peak in frequency is a beat)
+            bpm = peakFrequency * 60;  % Convert Hz to beats per minute
+            app.BPMValueLabel.Text = num2str(round(bpm));
+        end
+
+
+    % Data acquisition and processing loop
+    while app.AcquiringData
+        % Read new voltage data from the Arduino
+        newVoltage = readVoltage(app.a, signalPin);
+        disp(newVoltage);
+        voltageBuffer = [voltageBuffer(2:end), newVoltage];
+
+        % Update the offset buffer and running offset
+        offsetBuffer = [offsetBuffer(2:end), newVoltage]; % Update offset buffer
+        runningOffset = mean(offsetBuffer); % Update running offset
+
+        % Filter Design and Filtering
+        [filterB, filterA] = butter(app.FilterOrder, [app.LowCutoff, app.HighCutoff] / (app.Fs / 2), 'bandpass');
+        filteredVoltage = filter(filterB, filterA, voltageBuffer);
+        filteredBuffer = [filteredBuffer(2:end), filteredVoltage(end)];
+
+        % Plot raw signal
+        plot(app.UIAxes, app.t, 100*voltageBuffer-200);
+        title(app.UIAxes, 'Raw Signal in time domain');
+        disp(voltageBuffer);
+
+        % Plot filtered signal
+        plot(app.UIAxes2, app.t, 100*filteredBuffer);
+        title(app.UIAxes2, 'Filtered Signal in time domain');
+
+        % Calculate and plot spectrum of the raw signal
+        rawSpectrum = abs(fft(voltageBuffer));
+        P1 = rawSpectrum(1:bufferSize/2);
+        plot(app.UIAxes3, app.f, P1);
+        title(app.UIAxes3, 'Spectrum of Raw Signal (fft)');
+
+        % Calculate and plot spectrum of the filtered signal
+        filteredSpectrum = abs(fft(filteredBuffer));
+        P1Filtered = filteredSpectrum(1:bufferSize/2);
+        plot(app.UIAxes4, app.f, P1Filtered);
+        title(app.UIAxes4, 'Spectrum of Filtered Signal (fft)');
+
+        % Update the GUI
+        drawnow;
+
+        % Include a pause for stability and responsiveness
+        pause(0.01);
+    end
+
+        end
+
+        % Button pushed function: StopButton
+        function StopButtonPushed(app, event)
+             app.AcquiringData = false;
+
+   
+        end
+
+        % Value changed function: filterorderDropDown
+        function filterorderDropDownValueChanged(app, event)
+            value = app.filterorderDropDown.Value;
+
+
+            % Callback function for the dropdown
+            function FilterOrderDropdownValueChanged(app, event)
+                filterOrder = str2double(app.FilterOrderDropdown.Value);
+                app.FilterOrder = filterOrder;  % Store the filter order
+                disp(['Filter order set to ', num2str(filterOrder)]);
+            end
+
+        end
+    end
+
+    % Component initialization
+    methods (Access = private)
+
+        % Create UIFigure and components
+        function createComponents(app)
+
+            % Create UIFigure and hide until all components are created
+            app.UIFigure = uifigure('Visible', 'off');
+            app.UIFigure.Position = [100 100 640 480];
+            app.UIFigure.Name = 'MATLAB App';
+
+            % Create UIAxes
+            app.UIAxes = uiaxes(app.UIFigure);
+            title(app.UIAxes, 'Raw Signal in Time Domain')
+            xlabel(app.UIAxes, 'Time')
+            ylabel(app.UIAxes, 'Amplitude')
+            zlabel(app.UIAxes, 'Z')
+            app.UIAxes.Position = [48 298 255 154];
+
+            % Create UIAxes2
+            app.UIAxes2 = uiaxes(app.UIFigure);
+            title(app.UIAxes2, 'Filtered Signal in Time Domain')
+            xlabel(app.UIAxes2, 'Time')
+            ylabel(app.UIAxes2, 'Amplitude')
+            zlabel(app.UIAxes2, 'Z')
+            app.UIAxes2.Position = [48 129 255 155];
+
+            % Create UIAxes3
+            app.UIAxes3 = uiaxes(app.UIFigure);
+            title(app.UIAxes3, 'Raw signal Spectrum (fft) ')
+            xlabel(app.UIAxes3, 'Frequency')
+            ylabel(app.UIAxes3, 'Ampltude')
+            zlabel(app.UIAxes3, 'Z')
+            app.UIAxes3.Position = [350 303 249 144];
+
+            % Create UIAxes4
+            app.UIAxes4 = uiaxes(app.UIFigure);
+            title(app.UIAxes4, 'Filtered Signal Spectrum (fft)')
+            xlabel(app.UIAxes4, 'Frequency')
+            ylabel(app.UIAxes4, 'Ampitude')
+            zlabel(app.UIAxes4, 'Z')
+            app.UIAxes4.Position = [350 129 249 155];
+
+            % Create StartButton
+            app.StartButton = uibutton(app.UIFigure, 'push');
+            app.StartButton.ButtonPushedFcn = createCallbackFcn(app, @StartButtonPushed, true);
+            app.StartButton.Position = [174 69 100 23];
+            app.StartButton.Text = 'Start';
+
+            % Create StopButton
+            app.StopButton = uibutton(app.UIFigure, 'push');
+            app.StopButton.ButtonPushedFcn = createCallbackFcn(app, @StopButtonPushed, true);
+            app.StopButton.Position = [36 69 100 23];
+            app.StopButton.Text = 'Stop';
+
+            % Create filterorderDropDownLabel
+            app.filterorderDropDownLabel = uilabel(app.UIFigure);
+            app.filterorderDropDownLabel.HorizontalAlignment = 'right';
+            app.filterorderDropDownLabel.Position = [339 69 59 22];
+            app.filterorderDropDownLabel.Text = 'filter order';
+
+            % Create filterorderDropDown
+            app.filterorderDropDown = uidropdown(app.UIFigure);
+            app.filterorderDropDown.Items = {'1', '2', '3', '4', '5', '6', '7', '8'};
+            app.filterorderDropDown.ValueChangedFcn = createCallbackFcn(app, @filterorderDropDownValueChanged, true);
+            app.filterorderDropDown.Position = [413 69 100 22];
+            app.filterorderDropDown.Value = '2';
+
+            % Show the figure after all components are created
+            app.UIFigure.Visible = 'on';
+        end
+    end
+
+    % App creation and deletion
+    methods (Access = public)
+
+        % Construct app
+        function app = appFinalized_exported
+
+            % Create UIFigure and components
+            createComponents(app)
+
+            % Register the app with App Designer
+            registerApp(app, app.UIFigure)
+
+            if nargout == 0
+                clear app
+            end
+        end
+
+        % Code that executes before app deletion
+        function delete(app)
+
+            % Delete UIFigure when app is deleted
+            delete(app.UIFigure)
+        end
+    end
+end
